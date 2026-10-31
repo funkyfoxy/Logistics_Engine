@@ -64,6 +64,9 @@ def extract_data_from_pdf(pdf_path, target_fields):
         return fallback_data, extracted_text
         
     except Exception as e:
+        # NEW LINE: This prints the exact rejection reason to your cloud terminal
+        print(f"🚨 OPENAI REJECTION REASON: {str(e)}")
+
         # ARMOR: Dynamic Fallback if the API crashes
         fallback_data = {field: "API_ERROR" for field in target_fields}
         return fallback_data, extracted_text
