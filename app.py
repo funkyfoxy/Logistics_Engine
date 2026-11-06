@@ -13,7 +13,7 @@ load_dotenv()
 # Configure the web page to be wider and more enterprise-like
 st.set_page_config(page_title="Logistics Engine", page_icon="📦", layout="wide")
 
-# Initialize the Database (Core Ledger)
+# Upgraded Database Initialization with a flexible JSON column
 def init_db():
     conn = sqlite3.connect('logistics_ledger.db')
     c = conn.cursor()
@@ -24,6 +24,7 @@ def init_db():
             destination TEXT,
             cargo_weight TEXT,
             total_amount_due TEXT,
+            extra_fields TEXT,  -- Vaults all your custom user extractions permanently
             source_file TEXT
         )
     ''')
@@ -32,27 +33,48 @@ def init_db():
 
 init_db()
 
-# Inject data into the permanent SQL ledger
+# Upgraded Saving Function to automatically isolate custom metadata
 def save_invoice_to_db(invoice_data, filename):
+    # Separate the core columns from everything else
+    core_keys = {'invoice_number', 'destination', 'cargo_weight', 'total_amount_due'}
+    
+    # Pack any user-defined custom fields into a neat JSON string
+    extra_data = {k: v for k, v in invoice_data.items() if k not in core_keys}
+    extra_fields_json = json.dumps(extra_data)
+
     with sqlite3.connect('logistics_ledger.db') as conn:
         c = conn.cursor()
         c.execute('''
-            INSERT INTO invoices (invoice_number, destination, cargo_weight, total_amount_due, source_file)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO invoices (invoice_number, destination, cargo_weight, total_amount_due, extra_fields, source_file)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', (
             str(invoice_data.get('invoice_number', 'N/A')),
             str(invoice_data.get('destination', 'N/A')),
             str(invoice_data.get('cargo_weight', 'N/A')),
             str(invoice_data.get('total_amount_due', 'N/A')),
+            extra_fields_json,
             filename
         ))
         conn.commit()
 
-def get_all_invoices():
+# Upgraded Fetching function that flat-maps JSON columns into standard view rows
+def get_all_invoices_upgraded():
     with sqlite3.connect('logistics_ledger.db') as conn:
-        c = conn.cursor()
-        c.execute('SELECT invoice_number, destination, cargo_weight, total_amount_due, source_file FROM invoices')
-        return c.fetchall()
+        df = pd.read_sql_query('SELECT invoice_number, destination, cargo_weight, total_amount_due, extra_fields, source_file FROM invoices', conn)
+        
+        if df.empty:
+            return df
+            
+        # Parse the JSON string from the extra_fields column into actual pandas columns
+        extra_df = pd.json_normalize(df['extra_fields'].apply(json.loads))
+        
+        # Merge them back together and drop the raw JSON column
+        final_df = pd.concat([df.drop(columns=['extra_fields']), extra_df], axis=1)
+        
+        # Reorder columns cleanly to keep source_file at the very end
+        cols = [c for c in final_df.columns if c != 'source_file'] + ['source_file']
+        return final_df[cols]
+
 
 # --- THE DYNAMIC UI SIDEBAR ---
 st.sidebar.subheader("⚙️ Extraction Configuration")
@@ -124,12 +146,33 @@ if st.button("Process Invoices"):
 
 # --- THE PERMANENT LEDGER DISPLAY ---
 st.divider() 
-st.subheader("🗄️ Historical Invoice Database")
+st.subheader("🗄️ Historical Invoice Analytics Ledger")
 
-historical_data = get_all_invoices()
+df_historical = get_all_invoices_upgraded()
 
-if historical_data:
-    df = pd.DataFrame(historical_data, columns=["Invoice Number", "Destination", "Cargo Weight", "Total Amount Due", "Source File"])
-    st.dataframe(df, use_container_width=True)
+if not df_historical.empty:
+    # 📊 THE EXECUTIVE ANALYTICS ROW
+    kpi1, kpi2, kpi3 = st.columns(3)
+    
+    with kpi1:
+        st.metric(label="Total Processed Invoices", value=len(df_historical))
+        
+    with kpi2:
+        # Try to calculate global spending if numerical data exists
+        try:
+            # Clean string symbols like $, commas out to calculate sum
+            clean_amounts = df_historical['Total Amount Due'].str.replace('$', '').str.replace(',', '').astype(float)
+            total_spend = f"${clean_amounts.sum():,.2f}"
+        except:
+            total_spend = "Data Formatting Pending"
+        st.metric(label="Total Logged Expenditure", value=total_spend)
+        
+    with kpi3:
+        # Find the most frequent shipping destination
+        top_dest = df_historical['Destination'].mode().values[0] if not df_historical['Destination'].empty else "N/A"
+        st.metric(label="Top Logistics Corridor", value=str(top_dest))
+
+    st.write("") # Spacer
+    st.dataframe(df_historical, use_container_width=True)
 else:
     st.info("The database is currently empty. Upload an invoice to begin logging data.")
